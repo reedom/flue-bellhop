@@ -1035,22 +1035,73 @@ chmod +x scripts/check-drift.sh
 
 - [ ] **Step 2: Write the instruction doc**
 
-Replace `connectors/fleet--bellhop.md`. Content requirements (write actual prose; the code block is the verbatim reference source):
+Replace `connectors/fleet--bellhop.md`. The body follows the flue connector
+template (`withastro/flue` `connectors/README.md` "Body conventions";
+`sandbox--daytona.md` is the reference shape). Write actual prose; the code
+block is the verbatim reference source. Required structure, in order:
 
-- Header: what this connector is (bridge from headless Flue workflows to a bellhop fleet); category note (`fleet` -- not yet a flue-supported category; applied manually, not via `flue add`).
-- Prerequisites: same machine as the fleet; `agentbus` CLI ^0.3 (`cargo install agentbus-cli@^0.3`); `bellhopd` running; Node/local Flue runtime (NOT Cloudflare/edge -- say why: the store is `~/.agentbus` on disk).
-- Instructions for the AI coding agent: create `connectors/bellhop.ts` in the Flue app with exactly the following content, then:
+1. JSON frontmatter, fenced by `---` lines (flue parses with `JSON.parse()`):
 
-````markdown
-<!-- BEGIN bellhop.ts -->
-```ts
-(verbatim copy of reference/bellhop.ts)
-```
-<!-- END bellhop.ts -->
-````
+   ```markdown
+   ---
+   { "category": "fleet", "website": "https://github.com/reedom/flue-bellhop" }
+   ---
+   ```
 
-- Usage section: the fix-issue example (verbatim from `examples/fix-issue.ts`), plus the three placement forms (`at` omitted / `ws` / `ws/pane`) in one short table.
-- Failure modes: `AskTimeout` + `askResult` resume for retried workflow steps; `BellhopError` codes (`unknown_agent`, `missing_container`); `CliError` when the CLI is missing (install hint).
+   Directly below it, a note: `fleet` is not yet a flue-supported category;
+   until the category proposal lands, this doc is applied by pointing a
+   coding agent at this file, not via `flue add`.
+
+2. Title `# Add a Flue Connector: bellhop` and the template's framing
+   sentence: "You are an AI coding agent installing the bellhop fleet
+   connector for a Flue project. Follow these instructions exactly. Confirm
+   with the user only when something is genuinely ambiguous."
+
+3. **What this connector does** -- one paragraph: bridges headless Flue
+   workflows to a bellhop fleet (named, durable, observable Claude Code
+   agents in cmux panes) by wrapping the `agentbus` CLI; the user owns the
+   fleet (bellhopd, cmux); this connector only spawns the CLI.
+
+4. **Where to write the file** -- select the first existing source
+   directory: `<root>/.flue/`, then `<root>/src/`, then `<root>/`; write to
+   `<source-dir>/connectors/bellhop.ts`; ask the user when the layout is
+   unusual; create missing parent directories.
+
+5. **File contents** -- "Write this file verbatim. Do not improve it.",
+   then the embedded source:
+
+   ````markdown
+   <!-- BEGIN bellhop.ts -->
+   ```ts
+   (verbatim copy of reference/bellhop.ts)
+   ```
+   <!-- END bellhop.ts -->
+   ````
+
+6. **Required dependencies** -- none from npm (the module uses only
+   `node:` builtins). The runtime prerequisite is the `agentbus` CLI ^0.3:
+   `cargo install agentbus-cli@^0.3`.
+
+7. **Authentication and runtime constraints** (replaces the template's
+   provider-auth section; the bus has no credentials): access control is
+   the filesystem -- the store lives at `~/.agentbus` on disk. Hence: same
+   machine as the fleet; `bellhopd` running; Node/local Flue runtime
+   required (NOT Cloudflare/edge -- the store is unreachable there); the
+   default virtual sandbox likely blocks child processes, so the Node
+   runtime adapter is required.
+
+8. **Wiring it into a workflow** -- the fix-issue example (verbatim from
+   `examples/fix-issue.ts`), the three placement forms (`at` omitted /
+   `ws` / `ws/pane`) in one short table, and a prose note on feeding
+   `fleet.inbox()` envelopes into Flue's `dispatch(...)`.
+
+9. **Failure modes** -- `AskTimeout` + `askResult` resume for retried
+   workflow steps; `BellhopError` codes (`unknown_agent`,
+   `missing_container`); `CliError` when the CLI is missing (install hint).
+
+10. **Verify** -- typecheck the app, then the manual lane: `bellhopd`
+    running, `agentbus ls` answers, run the example workflow, finish with
+    `flue dev` / `flue run <workflow>`.
 
 - [ ] **Step 3: Run the drift check**
 
