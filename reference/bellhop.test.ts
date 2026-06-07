@@ -187,6 +187,22 @@ onBus('events', () => {
     expect(0 < item.seq).toBe(true);
     await fleet.close();
   });
+
+  it('cursor advances across yields so seq strictly increases', async () => {
+    const dir = scratchStore();
+    const fleet = await connectBellhop({ id: 'flue:ev-2', agentbusBin: BIN, agentbusDir: dir });
+    await runAgentbus(BIN, dir, ['publish', '--from', 'ext:test'], '{"type":"first"}');
+    await runAgentbus(BIN, dir, ['publish', '--from', 'ext:test'], '{"type":"second"}');
+    const iterator = fleet.events({ since: 0, intervalMs: 100 })[Symbol.asyncIterator]();
+    const firstResult = await iterator.next();
+    const secondResult = await iterator.next();
+    const first = firstResult.value as { seq: number; envelope: Envelope };
+    const second = secondResult.value as { seq: number; envelope: Envelope };
+    expect(first.envelope.kind).toBe('event');
+    expect(second.envelope.kind).toBe('event');
+    expect(first.seq < second.seq).toBe(true);
+    await fleet.close();
+  });
 });
 
 onBus('ask timeout', () => {

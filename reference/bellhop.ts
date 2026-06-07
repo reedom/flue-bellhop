@@ -326,7 +326,17 @@ export class Fleet {
     }
   }
 
-  /** Tail the bus event log from a cursor (poll loop; never consumes inboxes). */
+  /**
+   * Tail the bus event log from a cursor (poll loop; never consumes inboxes).
+   *
+   * Resume contract: the cursor is generator-local and not persisted. To resume
+   * after breaking the loop without replaying from seq 0, pass the last seen
+   * `seq` as `since`.
+   *
+   * Break-during-sleep: breaking a for-await abandons the generator at the
+   * current sleep; the pending setTimeout may keep the process alive for up to
+   * `intervalMs` before it unwinds.
+   */
   async *events(
     options: { since?: number; intervalMs?: number } = {},
   ): AsyncGenerator<{ seq: number; envelope: Envelope }> {
