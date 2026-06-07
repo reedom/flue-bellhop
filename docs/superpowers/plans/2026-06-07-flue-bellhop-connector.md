@@ -1035,29 +1035,196 @@ chmod +x scripts/check-drift.sh
 
 - [ ] **Step 2: Write the instruction doc**
 
-Replace `connectors/fleet--bellhop.md`. Content requirements (write actual prose; the code block is the verbatim reference source):
+Replace `connectors/fleet--bellhop.md` with exactly the following content.
+The body follows the flue connector template (`withastro/flue`
+`connectors/README.md` "Body conventions"; `sandbox--daytona.md` is the
+reference shape). The BEGIN/END block stays empty here -- Step 3 fills it
+mechanically from `reference/bellhop.ts`.
 
-- Header: what this connector is (bridge from headless Flue workflows to a bellhop fleet); category note (`fleet` -- not yet a flue-supported category; applied manually, not via `flue add`).
-- Prerequisites: same machine as the fleet; `agentbus` CLI ^0.3 (`cargo install agentbus-cli@^0.3`); `bellhopd` running; Node/local Flue runtime (NOT Cloudflare/edge -- say why: the store is `~/.agentbus` on disk).
-- Instructions for the AI coding agent: create `connectors/bellhop.ts` in the Flue app with exactly the following content, then:
+`````markdown
+---
+{ "category": "fleet", "website": "https://github.com/reedom/flue-bellhop" }
+---
 
-````markdown
+> **Note:** `fleet` is not yet a category supported by the flue connector
+> registry, so this connector cannot be installed via `flue add`. Apply it
+> by pointing your AI coding agent at this file. The category proposal is
+> future work tracked in `reedom/flue-bellhop`.
+
+# Add a Flue Connector: bellhop
+
+You are an AI coding agent installing the bellhop fleet connector for a
+Flue project. Follow these instructions exactly. Confirm with the user only
+when something is genuinely ambiguous (e.g. an unusual project layout).
+
+## What this connector does
+
+Bridges headless Flue workflows to a bellhop fleet: named, durable,
+human-observable Claude Code agents living in cmux panes on the same
+machine. It wraps the `agentbus` CLI -- every operation spawns the CLI with
+the payload on stdin and parses JSON from stdout; the store contract is
+never reimplemented. The user owns the fleet (bellhopd, cmux, the agents
+themselves); this connector only talks to it.
+
+## Where to write the file
+
+Select the first existing source directory: `<root>/.flue/`, then
+`<root>/src/`, then `<root>/`. Write the connector to
+`<source-dir>/connectors/bellhop.ts`.
+
+If neither feels right (uncommon layout, multiple workspaces, etc.), ask
+the user before writing.
+
+Create any missing parent directories.
+
+## File contents
+
+Write this file verbatim. Do not "improve" it -- it is tested against a
+real agentbus store in `reedom/flue-bellhop`, and CI keeps this copy in
+sync with the tested source.
+
 <!-- BEGIN bellhop.ts -->
-```ts
-(verbatim copy of reference/bellhop.ts)
-```
 <!-- END bellhop.ts -->
+
+## Required dependencies
+
+No npm dependencies -- the module uses only `node:` builtins. Do not run
+`npm install` for this connector.
+
+The runtime prerequisite is the `agentbus` CLI, version 0.3.0 or newer
+(the connector relies on `register --pid`, added in 0.3.0):
+
+```bash
+cargo install agentbus-cli@^0.3
+agentbus --version
+```
+
+## Authentication and runtime constraints
+
+There are no credentials: access control is the filesystem. The bus is a
+spool store on local disk (`~/.agentbus` by default, overridable with
+`AGENTBUS_DIR`). That imposes hard constraints -- surface them to the user
+if their setup does not match:
+
+- **Same machine.** The Flue app must run on the machine where the fleet
+  (bellhopd + cmux) runs. Remote and multi-machine setups are unsupported.
+- **Node runtime only.** Cloudflare/edge deployments cannot reach the
+  store and cannot spawn processes. This connector requires Flue's Node
+  runtime.
+- **Child processes must be allowed.** Flue's default virtual sandbox
+  (just-bash) blocks `child_process`; the connector needs the Node runtime
+  adapter so `execFile` works. Verify this before wiring it in.
+- **bellhopd must be running** for control ops (`agent.*`, `ui.*`) to be
+  answered. A plain `send` still spools while it is down and is delivered
+  when it returns.
+
+## Wiring it into a workflow
+
+A workflow that takes one issue, places an orchestrator and two workers in
+a worktree workspace, and waits for the orchestrator's verdict
+(`.flue/workflows/fix-issue.ts`; adjust the import path to where you wrote
+the connector):
+
+```ts
+import { connectBellhop } from '../connectors/bellhop.js';
+
+const ISSUE = 'issue-1234';
+const WT = `${process.env.HOME}/wt/${ISSUE}`;
+
+const fleet = await connectBellhop({ id: `flue:${ISSUE}` });
+
+// one workspace per worktree, materialized on demand via the first agent
+await fleet.agent.create({ name: 'orch-a', at: 'repo-a', group: ISSUE, cwd: `${WT}/repo-a` });
+await fleet.agent.create({ name: 'worker-a1', at: 'repo-a/workers' }); // cwd inherited
+await fleet.agent.create({ name: 'worker-a2', at: 'repo-a/workers' });
+
+console.log(JSON.stringify(await fleet.ui.tree(), null, 2));
+
+const verdict = await fleet.ask(
+  'orch-a',
+  { prompt: `Plan the fix for ${ISSUE} in this worktree; delegate to worker-a1/a2 over agentbus.` },
+  { timeoutMs: 1_800_000 },
+);
+console.log('orchestrator replied:', JSON.stringify(verdict));
+
+await fleet.close();
+```
+
+The `at` placement path is the only addressing scheme:
+
+| `at` | Meaning |
+|---|---|
+| omitted | the agent gets its own workspace, named after the agent |
+| `repo-a` | into workspace `repo-a` (created on demand; pass `cwd` on first use) |
+| `repo-a/workers` | into pane `workers` of workspace `repo-a` (both created on demand; `cwd` inherited from the workspace) |
+
+For agent-initiated traffic back into Flue (an agent asking the
+orchestrator something, progress notes), drain `fleet.inbox()` and feed
+the envelopes into a Flue agent session via `dispatch(...)`:
+
+```ts
+import { dispatch } from '@flue/runtime';
+
+for await (const envelope of fleet.inbox()) {
+  await dispatch({ agent: 'supervisor', id: fleet.id, input: envelope });
+}
+```
+
+## Failure modes
+
+| Error | When | What to do |
+|---|---|---|
+| `CliError` with `failed to start (ENOENT)` | `agentbus` is not installed or not on PATH | `cargo install agentbus-cli@^0.3` |
+| `CliError` with `error[unknown_instance]` in `.output` | the target id is not registered on the bus | check `agentbus ls`; create the agent first |
+| `AskTimeout { requestId }` | the recipient did not reply within `timeoutMs` (bellhopd down, or the agent is busy) | the ask is not lost -- retrieve a late reply with `fleet.askResult(requestId)`; this is the resume path for retried workflow steps |
+| `BellhopError { code: 'unknown_agent' }` | a control op named an agent bellhopd does not know | `fleet.agent.list()` to see what exists |
+| `BellhopError { code: 'missing_container' }` | a placement path referenced a workspace/pane that cannot be materialized | inspect `fleet.ui.tree()` |
+
+CLI errors carry the raw stderr in `.output` (format:
+`error[<code>]: <message>`); nothing is silently swallowed.
+
+## Verify
+
+1. Typecheck the app (`npx tsc --noEmit`, or the project's typecheck
+   command).
+2. `agentbus --version` prints 0.3.0 or newer; `agentbus ls` answers.
+3. Confirm bellhopd is running.
+4. Run the workflow: `flue dev`, then `flue run fix-issue` -- the cmux
+   session should show workspace `repo-a` appearing with the orchestrator
+   and worker panes.
+`````
+
+- [ ] **Step 3: Embed the reference source**
+
+Fill the BEGIN/END block from `reference/bellhop.ts`. The command is
+idempotent -- rerun it whenever the reference changes:
+
+````bash
+awk '
+  /<!-- BEGIN bellhop.ts -->/ {
+    print
+    print "```ts"
+    while (0 < (getline line < "reference/bellhop.ts")) print line
+    close("reference/bellhop.ts")
+    print "```"
+    skip = 1
+    next
+  }
+  /<!-- END bellhop.ts -->/ { skip = 0 }
+  !skip
+' connectors/fleet--bellhop.md > /tmp/fleet--bellhop.md \
+  && mv /tmp/fleet--bellhop.md connectors/fleet--bellhop.md
 ````
 
-- Usage section: the fix-issue example (verbatim from `examples/fix-issue.ts`), plus the three placement forms (`at` omitted / `ws` / `ws/pane`) in one short table.
-- Failure modes: `AskTimeout` + `askResult` resume for retried workflow steps; `BellhopError` codes (`unknown_agent`, `missing_container`); `CliError` when the CLI is missing (install hint).
+Run from the repo root (the awk script reads `reference/bellhop.ts`
+relative to the working directory).
 
-- [ ] **Step 3: Run the drift check**
+- [ ] **Step 4: Run the drift check**
 
 Run: `pnpm check:drift`
 Expected: `ok: doc matches reference`.
 
-- [ ] **Step 4: Add minimal CI**
+- [ ] **Step 5: Add minimal CI**
 
 `.github/workflows/ci.yml` -- typecheck + drift; store-backed tests stay local (installing the Rust CLI in CI is out of scope for MVP):
 
@@ -1081,7 +1248,7 @@ jobs:
       - run: pnpm check:drift
 ```
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add connectors scripts .github
@@ -1116,6 +1283,6 @@ git commit -m "docs: usage and status in readme"
 ## Plan self-review results
 
 - **Spec coverage:** spec sections 1-2 (summary/goals) map to Tasks 3-8; section 5 repo layout is the file structure above; section 6 (connector surface) is Tasks 4-8; section 7 (inbound) is Task 5's `inbox()` (the Flue `dispatch(...)` wiring is documented prose in Task 10's doc, not code -- it depends on the consuming app); section 8 (error handling) is Tasks 3, 6, 7; section 9 (testing incl. doc-drift) is the per-task tests plus Task 10; section 10 open question 1 is Task 2, questions 2-4 are documented constraints in Task 10's doc. Spec future work (category proposal, npm publish, remote) intentionally unplanned.
-- **Known deferrals:** Flue-runtime spawn-permission verification (spec open question 2) cannot be tested without a Flue app; the instruction doc states the Node-adapter requirement and the example is the manual lane. `events --follow` long-lived child (open question 3) deferred -- the poll loop ships first.
-- **Placeholder scan:** Task 10 step 2 specifies content requirements instead of full prose by design (the code block is verbatim `reference/bellhop.ts`, enforced by the drift check). Three `ADJUST` markers are deliberate spike-coupling points (register/ls output shapes, timeout request-id extraction, `--since` semantics) -- each sits next to the test that forces the fix.
+- **Known deferrals:** Flue-runtime spawn-permission verification (spec open question 2) cannot be tested without a Flue app; the instruction doc states the Node-adapter requirement and the example is the manual lane. `events --follow` long-lived child (open question 3) deferred -- the poll loop ships first. The spec sketch's `events({ filter })` option is also deferred -- callers filter client-side on `envelope.payload`/`from`; a server-side filter can ride the same option bag later.
+- **Placeholder scan:** Task 10 step 2 contains the full doc content verbatim (flue connector template shape: frontmatter, framing, where-to-write, dependencies, auth/constraints, wiring with the real `dispatch({ agent, id, input })` signature, failure modes, verify). The only deferred fill is the BEGIN/END code block, populated mechanically by the step 3 awk embed command and enforced by the drift check. Three `ADJUST` markers are deliberate spike-coupling points (register/ls output shapes, timeout request-id extraction, `--since` semantics) -- each sits next to the test that forces the fix; the spike findings (`docs/superpowers/research/2026-06-07-agentbus-cli-shapes.md`) have since resolved all three (stderr regex `/ask-result\s+(\S+)$/`, `--since` exclusive, `register --pid` available in 0.3.0).
 - **Type consistency:** `Envelope`, `CliError`, `BellhopError`, `AskTimeout`, `runAgentbus` defined in Tasks 3-4 and reused unchanged in Tasks 5-8; `onBus`/`scratchStore`/`startResponder` test helpers defined once (Tasks 3, 5) and shared; op strings match the cmux-bellhop spec 6.1 exactly (`agent.create` ... `ui.tree`).

@@ -73,7 +73,11 @@ and await -- the observable lane.
   the user's app; `dispatch(...)` can inject asynchronous input into Flue
   agent sessions (the natural sink for bellhop replies/events).
 - Flue connector docs use `<category>--<name>.md` naming; this repo uses
-  `fleet--bellhop.md` in anticipation of a `fleet` category.
+  `fleet--bellhop.md` in anticipation of a `fleet` category. The doc body
+  follows flue's connector template (JSON frontmatter; framing sentence;
+  what-it-does / where-to-write / verbatim file contents / dependencies /
+  auth / wiring / verify), per `connectors/README.md` body conventions in
+  `withastro/flue`, so a future registry PR is a copy, not a rewrite.
 
 ## 5. Architecture
 

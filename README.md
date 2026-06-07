@@ -19,9 +19,38 @@ const r = await fleet.ask('orch-a', { prompt }, { timeoutMs: 1_800_000 });
 ```
 
 Same-machine only (cmux + `~/.agentbus`); Node/local Flue runtimes.
+Cloudflare Workers and other edge runtimes cannot reach the on-disk store.
 
-Status: design phase. See
-[docs/superpowers/specs/2026-06-07-flue-bellhop-connector.md](docs/superpowers/specs/2026-06-07-flue-bellhop-connector.md).
+Status: reference implementation + instruction doc available.
+
+## Quickstart
+
+Point your coding agent at the instruction document:
+
+```
+connectors/fleet--bellhop.md
+```
+
+The agent reads the embedded reference source and generates an app-local
+`connectors/bellhop.ts` in your Flue app. There is no `flue add` command
+for this connector -- the `fleet` category is not yet flue-supported.
+
+## Running the tests locally
+
+agentbus CLI 0.3.0 or later is required. Install with:
+
+```bash
+cargo install agentbus-cli@^0.3
+```
+
+Then run the tests, pointing at the installed binary:
+
+```bash
+AGENTBUS_BIN=$(which agentbus) pnpm test
+```
+
+Tests self-skip only when no `agentbus` binary is found on PATH. Set
+`AGENTBUS_BIN` to point at a specific binary if it is not on PATH.
 
 Not affiliated with the Astro (Flue), manaflow-ai (cmux), or Anthropic
 projects.
