@@ -116,6 +116,15 @@ export async function runAgentbus(
   return stdout.trim();
 }
 
+// -- helpers ------------------------------------------------------------------
+
+/** Pull the request id out of a timed-out ask's CLI output (stderr hint:
+ *  "retrieve a late reply with: agentbus ask-result <id>"). */
+function extractRequestId(output: string): string | undefined {
+  const m = output.match(/ask-result\s+(\S+)/);
+  return m?.[1];
+}
+
 // -- fleet --------------------------------------------------------------------
 
 export interface ConnectOptions {
@@ -176,6 +185,55 @@ export class Fleet {
       return JSON.parse(out) as T;
     } catch {
       throw new CliError(`agentbus ${args[0] ?? ''}: expected JSON output`, out, 0);
+    }
+  }
+
+  /** Fire-and-forget message to a registered instance. */
+  async send(to: string, payload: unknown): Promise<void> {
+    await this.cli(['send', to, '--from', this.id], JSON.stringify(payload));
+  }
+
+  /**
+   * RPC: blocks until the recipient replies or timeoutMs elapses.
+   * Default is generous (10 min): delivery may include a pane spawn plus a
+   * full agent turn. On expiry throws AskTimeout carrying the requestId.
+   */
+  async ask(
+    to: string,
+    payload: unknown,
+    options: { timeoutMs?: number } = {},
+  ): Promise<unknown> {
+    const timeoutMs = options.timeoutMs ?? 600_000;
+    try {
+      const reply = await this.cliJson<{ request_id: string; payload: unknown }>(
+        ['ask', to, '--from', this.id, '--timeout-ms', String(timeoutMs)],
+        JSON.stringify(payload),
+      );
+      return reply.payload;
+    } catch (err) {
+      if (err instanceof CliError) {
+        const requestId = extractRequestId(err.output);
+        if (requestId !== undefined) {
+          throw new AskTimeout(requestId);
+        }
+      }
+      throw err;
+    }
+  }
+
+  /** Yield inbound envelopes for this orchestrator, forever. */
+  async *inbox(options: { idleTimeoutMs?: number } = {}): AsyncGenerator<Envelope> {
+    const idle = options.idleTimeoutMs ?? 25_000;
+    for (;;) {
+      const batch = await this.cliJson<{ envelopes: Envelope[] }>([
+        'await',
+        this.id,
+        '--timeout-ms',
+        String(idle),
+      ]);
+      for (const envelope of batch.envelopes) {
+        yield envelope;
+      }
     }
   }
 }

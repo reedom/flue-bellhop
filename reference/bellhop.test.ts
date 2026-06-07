@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { CliError, connectBellhop, runAgentbus } from './bellhop.js';
-import { BIN, onBus, scratchStore } from './testing.js';
+import { CliError, connectBellhop, runAgentbus, type Envelope } from './bellhop.js';
+import { BIN, onBus, scratchStore, startResponder } from './testing.js';
 
 onBus('runAgentbus', () => {
   it('runs a verb and returns stdout', async () => {
@@ -36,6 +36,31 @@ describe('runAgentbus spawn failures', () => {
     );
     expect(err).toBeInstanceOf(CliError);
     expect((err as CliError).exitCode).toBe(-1);
+  });
+});
+
+onBus('data plane', () => {
+  it('send spools a message; inbox() yields it', async () => {
+    const dir = scratchStore();
+    const fleet = await connectBellhop({ id: 'flue:dp-1', agentbusBin: BIN, agentbusDir: dir });
+    await fleet.send('flue:dp-1', { note: 'hello self' });
+    const iterator = fleet.inbox({ idleTimeoutMs: 2000 })[Symbol.asyncIterator]();
+    const first = await iterator.next();
+    expect((first.value as Envelope).payload).toEqual({ note: 'hello self' });
+    await fleet.close();
+  });
+
+  it('ask blocks until the responder replies', async () => {
+    const dir = scratchStore();
+    // Pre-register the peer so ask does not see unknown_instance before the
+    // bash subprocess has a chance to run its own register call.
+    await runAgentbus(BIN, dir, ['register', 'peer', '--persistent']);
+    const fleet = await connectBellhop({ id: 'flue:dp-2', agentbusBin: BIN, agentbusDir: dir });
+    const responder = startResponder(dir, 'peer');
+    const reply = await fleet.ask('peer', { q: 'ready?' }, { timeoutMs: 15_000 });
+    expect(reply).toEqual({ echo: { q: 'ready?' } });
+    await responder;
+    await fleet.close();
   });
 });
 
