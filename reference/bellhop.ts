@@ -235,8 +235,17 @@ export class Fleet {
       'ask-result',
       requestId,
     ]);
-    const status = out.status as 'pending' | 'replied' | 'expired';
-    return { status, payload: out.payload };
+    // agentbus 0.3 emits exactly these three lowercase statuses; anything else
+    // means the CLI contract changed and silently guessing would corrupt the
+    // resume path -- fail loudly instead.
+    if (out.status !== 'pending' && out.status !== 'replied' && out.status !== 'expired') {
+      throw new CliError(
+        `agentbus ask-result: unexpected status "${out.status}"`,
+        JSON.stringify(out),
+        0,
+      );
+    }
+    return { status: out.status, payload: out.payload };
   }
 
   /** Yield inbound envelopes for this orchestrator, forever. */

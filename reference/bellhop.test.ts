@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { AskTimeout, CliError, connectBellhop, runAgentbus, type Envelope } from './bellhop.js';
-import { BIN, onBus, scratchStore, startResponder } from './testing.js';
+import { BIN, createFakeAgentbus, onBus, scratchStore, startResponder } from './testing.js';
 
 onBus('runAgentbus', () => {
   it('runs a verb and returns stdout', async () => {
@@ -86,6 +86,23 @@ onBus('connectBellhop', () => {
     });
     const listed = JSON.parse(await runAgentbus(BIN, dir, ['ls']));
     expect(listed.instances.find((r: { id: string }) => r.id === 'flue:durable').pid).toBeNull();
+    await fleet.close();
+  });
+});
+
+describe('askResult status validation', () => {
+  it('throws CliError with "unexpected status" when agentbus emits an unknown status', async () => {
+    // The real CLI cannot emit a bogus status; use a fake binary so this test
+    // runs even where agentbus is absent and precisely targets the guard.
+    const fakeBin = createFakeAgentbus('weird');
+    const fleet = await connectBellhop({
+      id: 'flue:fake-1',
+      agentbusBin: fakeBin,
+      // No real store needed; register/unregister return {"ok":true} from the shim.
+    });
+    const err = await fleet.askResult('msg_x').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(CliError);
+    expect((err as CliError).message).toContain('unexpected status');
     await fleet.close();
   });
 });
