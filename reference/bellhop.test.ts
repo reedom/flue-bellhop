@@ -1,26 +1,6 @@
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { CliError, runAgentbus } from './bellhop.js';
-
-const BIN = process.env.AGENTBUS_BIN ?? 'agentbus';
-
-function haveAgentbus(): boolean {
-  try {
-    execFileSync(BIN, ['--version'], { stdio: 'ignore' });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-export function scratchStore(): string {
-  return mkdtempSync(join(tmpdir(), 'flue-bellhop-'));
-}
-
-export const onBus = describe.skipIf(!haveAgentbus());
+import { BIN, onBus, scratchStore } from './testing.js';
 
 onBus('runAgentbus', () => {
   it('runs a verb and returns stdout', async () => {
@@ -40,8 +20,21 @@ onBus('runAgentbus', () => {
 
   it('throws CliError with output attached on failure', async () => {
     const dir = scratchStore();
-    await expect(
-      runAgentbus(BIN, dir, ['send', 'nosuch', '--from', 'ext:test'], '{}'),
-    ).rejects.toBeInstanceOf(CliError);
+    const err = await runAgentbus(BIN, dir, ['send', 'nosuch', '--from', 'ext:test'], '{}').catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(CliError);
+    expect(0 < (err as CliError).exitCode).toBe(true);
+    expect(0 < (err as CliError).output.length).toBe(true);
+  });
+});
+
+describe('runAgentbus spawn failures', () => {
+  it('rejects with CliError exitCode -1 when binary does not exist', async () => {
+    const err = await runAgentbus('/nonexistent/agentbus', undefined, ['register', 'x']).catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(CliError);
+    expect((err as CliError).exitCode).toBe(-1);
   });
 });

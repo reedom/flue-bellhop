@@ -2,7 +2,7 @@
 // Wraps the `agentbus` CLI (agentbus >= 0.3); never touches the store files
 // directly. Same machine as the bellhop fleet; Node runtime only.
 
-import { execFile } from 'node:child_process';
+import { execFile, type ExecFileException } from 'node:child_process';
 
 // -- errors -----------------------------------------------------------------
 
@@ -44,6 +44,8 @@ interface RunResult {
   stdout: string;
   stderr: string;
   exitCode: number;
+  /** Set when the process failed to start (spawn error) or was killed by a signal. */
+  failure?: string;
 }
 
 function spawnCli(
@@ -58,12 +60,27 @@ function spawnCli(
   }
   return new Promise((resolve) => {
     const child = execFile(bin, args, { env }, (err, stdout, stderr) => {
-      const exitCode =
-        err && typeof (err as NodeJS.ErrnoException & { code?: unknown }).code === 'number'
-          ? ((err as unknown as { code: number }).code)
-          : err
-            ? 1
-            : 0;
+      if (!err) {
+        resolve({ stdout, stderr, exitCode: 0 });
+        return;
+      }
+
+      const execErr: ExecFileException = err;
+
+      // Signal kill: code is null/undefined and signal is set.
+      if (execErr.signal != null) {
+        resolve({ stdout, stderr, exitCode: -1, failure: execErr.signal });
+        return;
+      }
+
+      // Spawn failure: code is a string (e.g. 'ENOENT'), not a number.
+      if (typeof execErr.code === 'string') {
+        resolve({ stdout, stderr, exitCode: -1, failure: execErr.code });
+        return;
+      }
+
+      // Real non-zero exit: code is a number.
+      const exitCode = typeof execErr.code === 'number' ? execErr.code : 1;
       resolve({ stdout, stderr, exitCode });
     });
     child.stdin?.end(stdin ?? '');
@@ -77,7 +94,17 @@ export async function runAgentbus(
   args: string[],
   stdin?: string,
 ): Promise<string> {
-  const { stdout, stderr, exitCode } = await spawnCli(bin, agentbusDir, args, stdin);
+  const { stdout, stderr, exitCode, failure } = await spawnCli(bin, agentbusDir, args, stdin);
+
+  if (failure !== undefined) {
+    const verb = args[0] ?? '';
+    throw new CliError(
+      `agentbus ${verb} failed to start (${failure})`,
+      `${stdout}\n${stderr}`.trim(),
+      -1,
+    );
+  }
+
   if (exitCode !== 0) {
     throw new CliError(
       `agentbus ${args[0] ?? ''} failed (exit ${exitCode})`,
@@ -85,5 +112,6 @@ export async function runAgentbus(
       exitCode,
     );
   }
+
   return stdout.trim();
 }
