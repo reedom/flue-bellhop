@@ -19,6 +19,7 @@ const r = await fleet.ask('orch-a', { prompt }, { timeoutMs: 1_800_000 });
 ```
 
 Same-machine only (cmux + `~/.agentbus`); Node/local Flue runtimes.
+Cloudflare Workers and other edge runtimes cannot reach the on-disk store.
 
 Status: reference implementation + instruction doc available.
 
