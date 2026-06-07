@@ -175,6 +175,20 @@ onBus('control plane', () => {
   });
 });
 
+onBus('events', () => {
+  it('yields published events after the cursor', async () => {
+    const dir = scratchStore();
+    const fleet = await connectBellhop({ id: 'flue:ev-1', agentbusBin: BIN, agentbusDir: dir });
+    await runAgentbus(BIN, dir, ['publish', '--from', 'ext:test'], '{"type":"bellhop.agent.created"}');
+    const iterator = fleet.events({ since: 0, intervalMs: 100 })[Symbol.asyncIterator]();
+    const first = await iterator.next();
+    const item = first.value as { seq: number; envelope: Envelope };
+    expect(item.envelope.kind).toBe('event');
+    expect(0 < item.seq).toBe(true);
+    await fleet.close();
+  });
+});
+
 onBus('ask timeout', () => {
   it('throws AskTimeout with requestId; late reply via askResult', async () => {
     const dir = scratchStore();

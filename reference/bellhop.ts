@@ -188,6 +188,12 @@ export class Fleet {
     }
   }
 
+  /**
+   * Sends a control ask to bellhopd and unwraps the reply.
+   *
+   * Error contract (bellhop spec 6.1): a reply is an error iff it carries a
+   * top-level `error` object; success payloads must not use that key.
+   */
   private async control(payload: Record<string, unknown>): Promise<unknown> {
     const result = await this.ask('bellhop', payload, { timeoutMs: this.controlTimeoutMs });
     const error = (result as { error?: { code: string; message: string; retryable?: boolean } })
@@ -198,7 +204,12 @@ export class Fleet {
     return result;
   }
 
-  /** Lifecycle ops (bellhop spec 6.1, agent.* family). */
+  /**
+   * Lifecycle ops (bellhop spec 6.1, agent.* family).
+   *
+   * Reply shapes are owned by bellhop spec 6.1, hence `Promise<unknown>` --
+   * cast to the concrete type at the call site.
+   */
   readonly agent = {
     create: (args: {
       name: string;
@@ -210,6 +221,7 @@ export class Fleet {
       cwd?: string;
       /** cmux display title; default: the agent name. */
       title?: string;
+      /** Model id passed through to the agent harness; default: bellhopd's choice. */
       model?: string;
     }) => this.control({ op: 'agent.create', ...args }),
     wake: (name: string, options: { fresh?: boolean } = {}) =>
@@ -311,6 +323,27 @@ export class Fleet {
       for (const envelope of batch.envelopes) {
         yield envelope;
       }
+    }
+  }
+
+  /** Tail the bus event log from a cursor (poll loop; never consumes inboxes). */
+  async *events(
+    options: { since?: number; intervalMs?: number } = {},
+  ): AsyncGenerator<{ seq: number; envelope: Envelope }> {
+    let cursor = options.since ?? 0;
+    const interval = options.intervalMs ?? 500;
+    for (;;) {
+      const out = await this.cli(['events', '--since', String(cursor)]);
+      for (const line of out.split('\n')) {
+        if (line.length === 0) {
+          continue;
+        }
+        const item = JSON.parse(line) as { seq: number; envelope: Envelope };
+        // --since is exclusive (spike-verified): pass last-seen seq directly
+        cursor = item.seq;
+        yield item;
+      }
+      await new Promise((r) => setTimeout(r, interval));
     }
   }
 }
