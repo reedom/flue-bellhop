@@ -1,7 +1,7 @@
 # agentbus CLI output shapes — verification spike
 
 - Date: 2026-06-07
-- agentbus version: 0.2.0 (note: spec says 0.3, see concern below)
+- agentbus version: 0.3.0 (re-verified 2026-06-07; originally captured against 0.2.0)
 - AGENTBUS_DIR: isolated tempdir (mktemp -d) for all commands
 - Branch: feat/connector
 
@@ -11,18 +11,25 @@
 |---|---|---|
 | (a) timeout request_id machine-readable? | **No** — only in stderr as freeform text `error[timeout]: no reply within N ms; retrieve a late reply with: agentbus ask-result <id>` | **ADJUST**: must parse stderr with regex to extract request_id; stdout is empty on timeout |
 | (b) `--since` semantics | **after (exclusive)**: `--since 6` returns only seq 7; seq 6 is excluded | ok — connector should pass last-seen seq as `--since` cursor |
-| (c) error output format and exit codes | Stderr: `error[<code>]: <message>` freeform text; stdout empty; exit 1 for `unknown_instance`, `unknown_request_id`; exit 2 for `timeout` | **ADJUST**: error code must be parsed from stderr with regex `error\[([^\]]+)\]:`; not a JSON object |
+| (c) error output format and exit codes | Stderr: `error[<code>]: <message> (recovery hint)` freeform text; stdout empty; exit 1 for `unknown_instance`, `unknown_request_id`; exit 2 for `timeout` | **ADJUST**: error code must be parsed from stderr with regex `error\[([^\]]+)\]:`; not a JSON object; 0.3.0 appends recovery hints after the message but the `error[<code>]:` prefix is unchanged |
 | (d) register shape | `{"ok":true}` stdout, exit 0 | ok |
-| (d) ls shape | `{"instances":[{id,alive,pid,persistent,on_delivery,registered_at}]}` | ok — field names confirmed |
+| (d) register `--pid` flag | **Now exists in 0.3.0**: `agentbus register x --pid 12345` sets `pid` to 12345 in ls output; `--pid` and `--persistent` are mutually exclusive (exit 2, clap error) | **RESOLVED**: connector may now pass `--pid process.pid` explicitly for the non-persistent anchor case |
+| (d) ls shape | `{"instances":[{id,alive,pid,persistent,on_delivery,registered_at}]}` | ok — field names confirmed; `pid` reflects value from `--pid` when supplied |
 | (d) ask-result shape | `{"status":"pending","expires_at":"..."}` or `{"status":"replied","payload":{...},"replied_at":"..."}` or `{"status":"expired","expires_at":"..."}` | ok — three states confirmed |
 | (d) reply shape | `{"ok":true}` stdout, exit 0 | ok |
-| version mismatch | Installed binary is **0.2.0**; spec references 0.3; `--pid` flag does not exist | **CONCERN**: spec says `register --pid N` but 0.2.0 only has `--persistent`; pid appears in ls output for non-persistent registrations (set by the registering process) |
+| version re-verification | Binary is now **0.3.0**; all previously-adjusted behaviors confirmed unchanged; `--pid` flag added | **CONFIRMED**: no breaking changes from 0.2.0 to 0.3.0 for shapes already documented; `--pid` concern resolved |
 
 ---
 
 ## Version note
 
-The installed binary is **agentbus 0.2.0**, not 0.3 as referenced in the spec. The `register` subcommand does not accept a `--pid` flag. The pid is recorded automatically (set to the calling process's PID) when `--persistent` is omitted; with `--persistent` the pid field is null and `alive` is true regardless.
+Re-verified 2026-06-07 against **agentbus 0.3.0** (previously recorded against 0.2.0).
+
+Changes in 0.3.0 confirmed:
+1. `register` now accepts `--pid <PID>` — sets the owner pid explicitly for non-persistent rows (e.g. anchor to an AI harness process). `--pid` and `--persistent` are mutually exclusive; combining them exits 2 with a clap conflict error on stderr.
+2. Error messages now include recovery hints appended after the human-readable description (e.g. `error[unknown_instance]: unknown instance \`nosuch\` (recipients must register first; check list_instances / \`agentbus ls\`)`). The `error[<code>]:` prefix format is unchanged.
+
+All other shapes (register stdout, ls fields, ask timeout stderr wording, ask-result status enum, reply stdout, send stdout, events line format, --since semantics) are identical to 0.2.0 observations.
 
 ---
 
@@ -61,21 +68,57 @@ Options:
 
 ### `register`
 
-**Command:** `agentbus register spike`
+**Command (basic):** `agentbus register spike`
 
-**Flags available:** `--persistent`, `--on-delivery <ON_DELIVERY>`
-**Flags NOT available:** `--pid` (spec assumption broken — see concern above)
+**Flags available (0.3.0):** `--persistent`, `--on-delivery <ON_DELIVERY>`, `--pid <PID>`
 
-**stdout:**
+**`--pid` semantics (new in 0.3.0):** Sets the owner pid for the non-persistent row explicitly. Useful to anchor a registration to a long-lived parent process (e.g. the AI harness) rather than the short-lived CLI process that issued the command. `alive` reflects whether the pid given is still alive.
+
+**`--pid` + `--persistent` conflict:**
+
+**Command:** `agentbus register y --pid 12345 --persistent`
+
+**stderr:**
+```
+error: the argument '--pid <PID>' cannot be used with '--persistent'
+
+Usage: agentbus register --pid <PID> <ID>
+
+For more information, try '--help'.
+```
+
+**exit:** 2
+
+**`--pid` + `ls` verification:**
+
+**Command:** `agentbus register x --pid 12345` then `agentbus ls`
+
+**stdout (register):**
 ```json
 {"ok":true}
+```
+
+**stdout (ls, pid reflects supplied value):**
+```json
+{
+  "instances": [
+    {
+      "alive": false,
+      "id": "x",
+      "on_delivery": null,
+      "persistent": false,
+      "pid": 12345,
+      "registered_at": "2026-06-07T13:07:56.973773Z"
+    }
+  ]
+}
 ```
 
 **stderr:** (empty)
 
 **exit:** 0
 
-**Consequence:** ok — shape is `{"ok":true}`. The `--pid` flag does not exist; non-persistent registration auto-records the calling process's PID. With `--persistent`, pid is null and alive is always true.
+**Consequence:** ok — shape is `{"ok":true}`. With `--pid`, the `pid` field in ls reflects the supplied value (not the calling process pid). With `--persistent`, pid is null and alive is always true. Without both flags, pid defaults to calling process pid.
 
 ---
 
@@ -205,13 +248,13 @@ Options:
 
 ### `ask` — timeout path
 
-**Command:** `echo '{"q":2}' | agentbus ask spike --from ext:spike --timeout-ms 2000`
+**Command:** `echo '{"q":1}' | agentbus ask x --from ext:s --timeout-ms 1500`
 
 **stdout:** (empty)
 
-**stderr:**
+**stderr (0.3.0 — wording unchanged from 0.2.0, no recovery hint appended to timeout errors):**
 ```
-error[timeout]: no reply within 2000 ms; retrieve a late reply with: agentbus ask-result msg_01KTH2VWWKPXFK3E32FW0Z50H9
+error[timeout]: no reply within 1500 ms; retrieve a late reply with: agentbus ask-result msg_01KTH354183H51Q62FHAW0WX1P
 ```
 
 **exit:** 2
@@ -225,22 +268,24 @@ or more generally:
 /ask-result\s+(\S+)\s*$/
 ```
 
+**0.3.0 verification:** regex `/ask-result\s+(\S+)$/` extracts the request_id correctly against 0.3.0 stderr. Wording is byte-for-byte identical to 0.2.0; no new hint lines appended.
+
 ---
 
 ### `ask` — unknown instance path
 
-**Command:** `echo '{"q":1}' | agentbus ask nosuch --from ext:spike --timeout-ms 1000`
+**Command:** `echo '{}' | agentbus send nosuch --from ext:s` (also applies to `ask nosuch`)
 
 **stdout:** (empty)
 
-**stderr:**
+**stderr (0.3.0 — recovery hint now appended):**
 ```
-error[unknown_instance]: unknown instance `nosuch`
+error[unknown_instance]: unknown instance `nosuch` (recipients must register first; check list_instances / `agentbus ls`)
 ```
 
 **exit:** 1
 
-**Consequence:** ADJUST — error is freeform stderr text with code in brackets. Parse with regex `error\[([^\]]+)\]: (.+)`.
+**Consequence:** ADJUST — error is freeform stderr text with code in brackets. Parse with regex `error\[([^\]]+)\]:` to extract code. In 0.3.0 the human-readable message portion may include a parenthesised recovery hint; the `error[<code>]:` prefix format is unchanged and the regex remains valid.
 
 ---
 
@@ -422,30 +467,35 @@ error[unknown_request_id]: unknown request_id `msg_UNKNOWN`
 
 ## Assumptions that break or need adjustment
 
-### 1. `register --pid` does not exist (ADJUST)
+### 1. `register --pid` now exists in 0.3.0 (RESOLVED)
 
-The spec (section 4) says: `register <id> [--pid N | --persistent]`. In agentbus 0.2.0, `--pid` is not a valid flag. The connector must use `--persistent` for durable orchestrator addresses, or omit both flags to let the CLI auto-record the calling PID for the process-lifetime case.
+The spec (section 4) says: `register <id> [--pid N | --persistent]`. In agentbus 0.2.0 this flag was absent; in **0.3.0 it is present**. The connector's `connectBellhop({ anchor: 'pid' })` path may now pass `--pid process.pid` explicitly. The `--pid` and `--persistent` flags are mutually exclusive (clap enforces this; exit 2 on conflict).
 
-**Practical impact:** The connector's `connectBellhop({ anchor: 'pid' })` path cannot pass `--pid process.pid` explicitly. It must either rely on non-persistent registration (which auto-records the calling process PID) or use `--persistent` for the durable case.
+**`register --help` (0.3.0):**
+```
+--pid <PID>   Owner pid for the non-persistent row (e.g. the AI harness process)
+```
 
-### 2. Timeout error carries request_id only in stderr freeform text (ADJUST)
+### 2. Timeout error carries request_id only in stderr freeform text (ADJUST — still required)
 
 On `ask` timeout, stdout is empty and exit code is 2. The request_id appears only in stderr as:
 ```
 error[timeout]: no reply within N ms; retrieve a late reply with: agentbus ask-result <id>
 ```
 
-The connector must capture stderr and apply a regex such as `/ask-result\s+(\S+)$/` to extract the request_id for the `AskTimeout { requestId }` error object.
+Wording is **unchanged in 0.3.0**. The connector must capture stderr and apply a regex such as `/ask-result\s+(\S+)$/` to extract the request_id for the `AskTimeout { requestId }` error object. Verified working against 0.3.0.
 
-### 3. All error output is freeform stderr, not JSON (ADJUST)
+### 3. All error output is freeform stderr, not JSON (ADJUST — still required)
 
-The spec (section 6) says: `Control-plane errors ({"error":{code,...}} with exit 1)`. In 0.2.0, errors are never JSON. They are plaintext stderr in the form `error[<code>]: <message>`. The connector must parse stderr rather than parse stdout JSON for errors.
+The spec (section 6) says: `Control-plane errors ({"error":{code,...}} with exit 1)`. In 0.3.0, errors remain plaintext stderr in the form `error[<code>]: <message>`. In 0.3.0 some errors append a parenthesised recovery hint after the message; the `error[<code>]:` prefix is unchanged.
 
-**Known error codes observed:**
+The connector must parse stderr with regex `error\[([^\]]+)\]:` to extract the error code.
+
+**Known error codes observed (0.3.0):**
 - `timeout` — exit 2 — ask timed out
-- `unknown_instance` — exit 1 — instance not registered
+- `unknown_instance` — exit 1 — instance not registered (now includes recovery hint)
 - `unknown_request_id` — exit 1 — request_id not found
 
-### 4. agentbus version is 0.2.0, not 0.3 (CONCERN)
+### 4. agentbus version re-verified as 0.3.0 (CONFIRMED — concern resolved)
 
-The spec references `agentbus-cli@^0.3`. The installed binary is 0.2.0. If 0.3 introduces breaking changes (e.g., adds JSON error output, adds `--pid` flag), the reference implementation should be written against the observed 0.2.0 behavior and documented as requiring a minimum version. The install hint in the constructor error message should reference the actual minimum tested version.
+The installed binary is now **0.3.0**, matching the spec reference `agentbus-cli@^0.3`. No breaking changes were introduced from 0.2.0 to 0.3.0 for the shapes used by the connector. The minimum required version for the connector is 0.3.0 (due to `--pid` dependency).
