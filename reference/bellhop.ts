@@ -188,6 +188,56 @@ export class Fleet {
     }
   }
 
+  private async control(payload: Record<string, unknown>): Promise<unknown> {
+    const result = await this.ask('bellhop', payload, { timeoutMs: this.controlTimeoutMs });
+    const error = (result as { error?: { code: string; message: string; retryable?: boolean } })
+      ?.error;
+    if (error !== undefined) {
+      throw new BellhopError(error.code, error.message, error.retryable ?? false);
+    }
+    return result;
+  }
+
+  /** Lifecycle ops (bellhop spec 6.1, agent.* family). */
+  readonly agent = {
+    create: (args: {
+      name: string;
+      /** Placement path workspace[/pane]; omitted = own workspace. */
+      at?: string;
+      /** Group used when the workspace is created on demand. */
+      group?: string;
+      /** Optional when the host workspace exists (cwd inherited). */
+      cwd?: string;
+      /** cmux display title; default: the agent name. */
+      title?: string;
+      model?: string;
+    }) => this.control({ op: 'agent.create', ...args }),
+    wake: (name: string, options: { fresh?: boolean } = {}) =>
+      this.control({ op: 'agent.activate', name, fresh: options.fresh ?? false }),
+    deactivate: (name: string) => this.control({ op: 'agent.deactivate', name }),
+    forget: (name: string) => this.control({ op: 'agent.forget', name }),
+    list: () => this.control({ op: 'agent.list' }),
+    status: (name: string) => this.control({ op: 'agent.status', name }),
+  };
+
+  /** cmux hierarchy ops (bellhop spec 6.1, ui.* family). Always optional --
+   *  agent.create materializes missing containers on demand. */
+  readonly ui = {
+    group: {
+      create: (args: { name: string; title?: string }) =>
+        this.control({ op: 'ui.group.create', ...args }),
+    },
+    workspace: {
+      create: (args: { name: string; cwd: string; group?: string; title?: string }) =>
+        this.control({ op: 'ui.workspace.create', ...args }),
+    },
+    pane: {
+      create: (args: { name: string; workspace: string; split?: string }) =>
+        this.control({ op: 'ui.pane.create', ...args }),
+    },
+    tree: () => this.control({ op: 'ui.tree' }),
+  };
+
   /** Fire-and-forget message to a registered instance. */
   async send(to: string, payload: unknown): Promise<void> {
     await this.cli(['send', to, '--from', this.id], JSON.stringify(payload));

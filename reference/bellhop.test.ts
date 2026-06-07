@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { AskTimeout, CliError, connectBellhop, runAgentbus, type Envelope } from './bellhop.js';
+import { AskTimeout, BellhopError, CliError, connectBellhop, runAgentbus, type Envelope } from './bellhop.js';
 import { BIN, createFakeAgentbus, onBus, scratchStore, startResponder } from './testing.js';
 
 onBus('runAgentbus', () => {
@@ -103,6 +103,74 @@ describe('askResult status validation', () => {
     const err = await fleet.askResult('msg_x').catch((e: unknown) => e);
     expect(err).toBeInstanceOf(CliError);
     expect((err as CliError).message).toContain('unexpected status');
+    await fleet.close();
+  });
+});
+
+onBus('control plane', () => {
+  it('agent.create carries placement fields', async () => {
+    const dir = scratchStore();
+    const fleet = await connectBellhop({
+      id: 'flue:cp-1',
+      agentbusBin: BIN,
+      agentbusDir: dir,
+      controlTimeoutMs: 15_000,
+    });
+    // Pre-register the responder so ask does not see unknown_instance before
+    // the bash subprocess has a chance to run its own register call.
+    await runAgentbus(BIN, dir, ['register', 'bellhop', '--persistent']);
+    const responder = startResponder(dir, 'bellhop');
+    const echoed = (await fleet.agent.create({
+      name: 'worker-a1',
+      at: 'repo-a/workers',
+      group: 'issue-1234',
+    })) as { echo: Record<string, unknown> };
+    expect(echoed.echo).toMatchObject({
+      op: 'agent.create',
+      name: 'worker-a1',
+      at: 'repo-a/workers',
+      group: 'issue-1234',
+    });
+    await responder;
+    await fleet.close();
+  });
+
+  it('ui.workspace.create and ui.tree map to their ops', async () => {
+    const dir = scratchStore();
+    const fleet = await connectBellhop({
+      id: 'flue:cp-2',
+      agentbusBin: BIN,
+      agentbusDir: dir,
+      controlTimeoutMs: 15_000,
+    });
+    await runAgentbus(BIN, dir, ['register', 'bellhop', '--persistent']);
+    const responder = startResponder(dir, 'bellhop');
+    const echoed = (await fleet.ui.workspace.create({
+      name: 'repo-a',
+      cwd: '/wt/repo-a',
+      group: 'issue-1234',
+    })) as { echo: Record<string, unknown> };
+    expect(echoed.echo.op).toBe('ui.workspace.create');
+    await responder;
+    await fleet.close();
+  });
+
+  it('ErrorReply payloads become BellhopError', async () => {
+    const dir = scratchStore();
+    const fleet = await connectBellhop({
+      id: 'flue:cp-3',
+      agentbusBin: BIN,
+      agentbusDir: dir,
+      controlTimeoutMs: 15_000,
+    });
+    await runAgentbus(BIN, dir, ['register', 'bellhop', '--persistent']);
+    const responder = startResponder(dir, 'bellhop');
+    await expect(fleet.agent.status('ghost')).rejects.toMatchObject({
+      name: 'BellhopError',
+      code: 'unknown_agent',
+      retryable: false,
+    });
+    await responder;
     await fleet.close();
   });
 });
