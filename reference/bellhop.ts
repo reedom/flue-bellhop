@@ -212,13 +212,31 @@ export class Fleet {
       return reply.payload;
     } catch (err) {
       if (err instanceof CliError) {
-        const requestId = extractRequestId(err.output);
-        if (requestId !== undefined) {
-          throw new AskTimeout(requestId);
+        // Guard on exit code 2: that is the CLI's designated timeout exit code.
+        // Other errors (e.g. unknown_instance, exit 1) may include "ask-result"
+        // in their recovery hints in future agentbus versions; gating on exit 2
+        // prevents misclassifying them as timeouts.
+        if (err.exitCode === 2) {
+          const requestId = extractRequestId(err.output);
+          if (requestId !== undefined) {
+            throw new AskTimeout(requestId);
+          }
         }
       }
       throw err;
     }
+  }
+
+  /** Status of an earlier ask: the resume path for retried workflow steps. */
+  async askResult(
+    requestId: string,
+  ): Promise<{ status: 'pending' | 'replied' | 'expired'; payload?: unknown }> {
+    const out = await this.cliJson<{ status: string; payload?: unknown }>([
+      'ask-result',
+      requestId,
+    ]);
+    const status = out.status as 'pending' | 'replied' | 'expired';
+    return { status, payload: out.payload };
   }
 
   /** Yield inbound envelopes for this orchestrator, forever. */

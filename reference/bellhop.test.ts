@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CliError, connectBellhop, runAgentbus, type Envelope } from './bellhop.js';
+import { AskTimeout, CliError, connectBellhop, runAgentbus, type Envelope } from './bellhop.js';
 import { BIN, onBus, scratchStore, startResponder } from './testing.js';
 
 onBus('runAgentbus', () => {
@@ -86,6 +86,30 @@ onBus('connectBellhop', () => {
     });
     const listed = JSON.parse(await runAgentbus(BIN, dir, ['ls']));
     expect(listed.instances.find((r: { id: string }) => r.id === 'flue:durable').pid).toBeNull();
+    await fleet.close();
+  });
+});
+
+onBus('ask timeout', () => {
+  it('throws AskTimeout with requestId; late reply via askResult', async () => {
+    const dir = scratchStore();
+    const fleet = await connectBellhop({ id: 'flue:to-1', agentbusBin: BIN, agentbusDir: dir });
+    await runAgentbus(BIN, dir, ['register', 'silent', '--persistent']);
+
+    let requestId = '';
+    try {
+      await fleet.ask('silent', { q: 1 }, { timeoutMs: 1500 });
+      expect.unreachable('ask should have timed out');
+    } catch (err) {
+      expect(err).toBeInstanceOf(AskTimeout);
+      requestId = (err as AskTimeout).requestId;
+    }
+
+    // the recipient answers late, straight via the CLI
+    await runAgentbus(BIN, dir, ['reply', requestId, 'silent'], '{"late":true}');
+    const result = await fleet.askResult(requestId);
+    expect(result.status).toBe('replied');
+    expect(result.payload).toEqual({ late: true });
     await fleet.close();
   });
 });
