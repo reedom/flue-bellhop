@@ -115,3 +115,73 @@ export async function runAgentbus(
 
   return stdout.trim();
 }
+
+// -- fleet --------------------------------------------------------------------
+
+export interface ConnectOptions {
+  /** Bus identity of this orchestrator, e.g. "flue:issue-1234". */
+  id: string;
+  /** 'pid' (default): row dies with this process. 'persistent': survives it. */
+  anchor?: 'pid' | 'persistent';
+  agentbusBin?: string;
+  /** Override the store dir (default: agentbus resolution / $AGENTBUS_DIR). */
+  agentbusDir?: string;
+  /** Timeout for control asks to bellhopd. */
+  controlTimeoutMs?: number;
+}
+
+export interface Envelope {
+  id: string;
+  kind: 'message' | 'ask' | 'reply' | 'event';
+  from: string;
+  to?: string | null;
+  request_id?: string | null;
+  ts: string;
+  payload: unknown;
+}
+
+export class Fleet {
+  readonly id: string;
+  private readonly bin: string;
+  private readonly dir: string | undefined;
+  private readonly controlTimeoutMs: number;
+
+  constructor(options: ConnectOptions) {
+    this.id = options.id;
+    this.bin = options.agentbusBin ?? 'agentbus';
+    this.dir = options.agentbusDir;
+    this.controlTimeoutMs = options.controlTimeoutMs ?? 30_000;
+  }
+
+  /** @internal */
+  async registerSelf(anchor: 'pid' | 'persistent'): Promise<void> {
+    const args =
+      anchor === 'persistent'
+        ? ['register', this.id, '--persistent']
+        : ['register', this.id, '--pid', String(process.pid)];
+    await this.cli(args);
+  }
+
+  async close(): Promise<void> {
+    await this.cli(['unregister', this.id]);
+  }
+
+  private cli(args: string[], stdin?: string): Promise<string> {
+    return runAgentbus(this.bin, this.dir, args, stdin);
+  }
+
+  private async cliJson<T>(args: string[], stdin?: string): Promise<T> {
+    const out = await this.cli(args, stdin);
+    try {
+      return JSON.parse(out) as T;
+    } catch {
+      throw new CliError(`agentbus ${args[0] ?? ''}: expected JSON output`, out, 0);
+    }
+  }
+}
+
+export async function connectBellhop(options: ConnectOptions): Promise<Fleet> {
+  const fleet = new Fleet(options);
+  await fleet.registerSelf(options.anchor ?? 'pid');
+  return fleet;
+}

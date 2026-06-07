@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CliError, runAgentbus } from './bellhop.js';
+import { CliError, connectBellhop, runAgentbus } from './bellhop.js';
 import { BIN, onBus, scratchStore } from './testing.js';
 
 onBus('runAgentbus', () => {
@@ -36,5 +36,31 @@ describe('runAgentbus spawn failures', () => {
     );
     expect(err).toBeInstanceOf(CliError);
     expect((err as CliError).exitCode).toBe(-1);
+  });
+});
+
+onBus('connectBellhop', () => {
+  it('registers a pid-anchored identity and unregisters on close', async () => {
+    const dir = scratchStore();
+    const fleet = await connectBellhop({ id: 'flue:test-1', agentbusBin: BIN, agentbusDir: dir });
+    const listed = JSON.parse(await runAgentbus(BIN, dir, ['ls']));
+    const row = listed.instances.find((r: { id: string }) => r.id === 'flue:test-1');
+    expect(row.pid).toBe(process.pid);
+    await fleet.close();
+    const after = JSON.parse(await runAgentbus(BIN, dir, ['ls']));
+    expect(after.instances.find((r: { id: string }) => r.id === 'flue:test-1')).toBeUndefined();
+  });
+
+  it('persistent anchor sets no pid', async () => {
+    const dir = scratchStore();
+    const fleet = await connectBellhop({
+      id: 'flue:durable',
+      anchor: 'persistent',
+      agentbusBin: BIN,
+      agentbusDir: dir,
+    });
+    const listed = JSON.parse(await runAgentbus(BIN, dir, ['ls']));
+    expect(listed.instances.find((r: { id: string }) => r.id === 'flue:durable').pid).toBeNull();
+    await fleet.close();
   });
 });
